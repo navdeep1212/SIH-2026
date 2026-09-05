@@ -1,0 +1,17 @@
+# Python
+ml-service/venv/
+ml-service/__pycache__/
+ml-service/*.pt
+ml-service/runs/
+
+# Node
+backend/node_modules/
+frontend/node_modules/
+
+# Environment / secrets
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db

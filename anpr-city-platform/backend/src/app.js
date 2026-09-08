@@ -10,6 +10,7 @@ const path = require('path');
 const Camera = require('./models/Camera');
 const DetectionEvent = require('./models/DetectionEvent');
 const BlacklistEntry = require('./models/BlacklistEntry');
+const Alert = require('./models/Alert');
 
 const app = express();
 
@@ -90,6 +91,23 @@ app.post('/api/videos/process', upload.single('video'), async (req, res) => {
     let savedEvents = [];
     if (eventsToSave.length > 0) {
       savedEvents = await DetectionEvent.insertMany(eventsToSave);
+
+      // Check each saved event against BlacklistEntry and trigger alerts if matched
+      const io = req.app.get('io');
+      for (const event of savedEvents) {
+        const blacklistMatch = await BlacklistEntry.findOne({ plate_number: event.plate_number });
+        if (blacklistMatch) {
+          const alert = new Alert({
+            event_id: event._id,
+            type: 'blacklist_match',
+            acknowledged: false,
+          });
+          const savedAlert = await alert.save();
+          if (io) {
+            io.emit('alerts', savedAlert);
+          }
+        }
+      }
     }
 
     return res.status(200).json(savedEvents);
@@ -144,6 +162,41 @@ app.get('/api/cameras', async (req, res) => {
   try {
     const cameras = await Camera.find();
     return res.status(200).json(cameras);
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// Blacklist Endpoints
+// ==========================================
+app.post('/api/blacklist', async (req, res) => {
+  try {
+    const { plate_number, reason, added_by } = req.body;
+    if (!plate_number) {
+      return res.status(400).json({ error: 'plate_number is required' });
+    }
+
+    const entry = new BlacklistEntry({
+      plate_number,
+      reason: reason || '',
+      added_by: added_by || 'system',
+    });
+
+    const savedEntry = await entry.save();
+    return res.status(201).json(savedEntry);
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({ error: 'Plate number is already blacklisted' });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/blacklist', async (req, res) => {
+  try {
+    const entries = await BlacklistEntry.find();
+    return res.status(200).json(entries);
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

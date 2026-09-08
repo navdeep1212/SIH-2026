@@ -6,6 +6,7 @@ import easyocr
 from ultralytics import YOLO
 from pathlib import Path
 from PIL import Image
+from plate_validator import normalize_plate
 
 def get_preprocessing_variants(img):
     """
@@ -57,11 +58,11 @@ def process_ocr_blocks(ocr_res):
     sorted_res = sorted(ocr_res, key=lambda x: (x[0][0][0] + x[0][2][0]) / 2)
 
     combined_text = " ".join([res[1] for res in sorted_res])
-    combined_conf = np.mean([res[2] for res in sorted_res])
+    combined_conf = float(np.mean([res[2] for res in sorted_res]))
 
     return combined_text.strip(), combined_conf
 
-def main():
+def main(max_images=None):
     # Absolute paths
     base_dir = r"C:\Users\navde\OneDrive\Desktop\SIH 2026\anpr-city-platform"
     model_path = os.path.join(base_dir, r"runs\detect\runs\detect\plate_detector\weights\best.pt")
@@ -85,6 +86,8 @@ def main():
     reader = easyocr.Reader(['en'], gpu=False)
 
     images = [f for f in os.listdir(val_images_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    if max_images is not None:
+        images = images[:max_images]
     print(f"Processing {len(images)} images...")
 
     all_results = []
@@ -135,7 +138,8 @@ def main():
 
                 # OCR
                 ocr_res = reader.readtext(var_img, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
-                text, conf = process_ocr_blocks(ocr_res)
+                raw_text, conf = process_ocr_blocks(ocr_res)
+                corrected_text, was_corrected, matches_format = normalize_plate(raw_text)
 
                 variant_results.append({
                     "image_filename": img_name,
@@ -143,18 +147,24 @@ def main():
                     "crop_width": crop_w,
                     "crop_height": crop_h,
                     "variant": var_name,
-                    "ocr_text": text,
-                    "ocr_confidence": conf
+                    "raw_text": raw_text,
+                    "corrected_text": corrected_text,
+                    "ocr_confidence": conf,
+                    "matches_format": matches_format,
+                    "was_corrected": was_corrected
                 })
 
-                plate_comparison[f"{var_name}_text"] = text
+                plate_comparison[f"{var_name}_raw_text"] = raw_text
+                plate_comparison[f"{var_name}_text"] = corrected_text
                 plate_comparison[f"{var_name}_confidence"] = conf
+                plate_comparison[f"{var_name}_matches_format"] = matches_format
+                plate_comparison[f"{var_name}_was_corrected"] = was_corrected
 
                 # Heuristic for "Best" visualization: just highest confidence for now,
                 # but we report all.
                 if conf > max_conf:
                     max_conf = conf
-                    best_variant = (var_name, text, var_img)
+                    best_variant = (var_name, corrected_text, var_img)
 
             all_results.extend(variant_results)
             comparison_data.append(plate_comparison)
@@ -182,7 +192,7 @@ def main():
     print(f"OCR attempts: {len(all_results)}")
 
     # Non-empty results
-    non_empty = [r for r in all_results if r['ocr_text']]
+    non_empty = [r for r in all_results if r['corrected_text']]
     print(f"Non-empty OCR results: {len(non_empty)}")
 
     # Avg conf per variant
@@ -191,12 +201,9 @@ def main():
         avg = np.mean(v_confs) if v_confs else 0
         print(f"Avg confidence ({var}): {avg:.4f}")
 
-    # Valid outputs (A-Z 0-9 only)
-    def is_alnum(s):
-        return s.isalnum() if s else False
-
-    valid_count = sum(1 for r in all_results if is_alnum(r['ocr_text']))
-    print(f"Outputs containing only A-Z/0-9: {valid_count}")
+    # Valid outputs (matching standard format)
+    valid_count = sum(1 for r in all_results if r['matches_format'])
+    print(f"Outputs matching plate format: {valid_count}")
 
     # Examples where variants disagree
     disagreements = 0
@@ -209,4 +216,6 @@ def main():
     print(f"\nExperiment completed. Results in: {output_base}")
 
 if __name__ == "__main__":
-    main()
+    import sys
+    max_imgs = int(sys.argv[1]) if len(sys.argv) > 1 else None
+    main(max_images=max_imgs)

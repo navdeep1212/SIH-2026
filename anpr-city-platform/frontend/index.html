@@ -1,12 +1,103 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <title>NEXUS VISION - AI Traffic Intelligence</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+              "error": "#ffb4ab",
+              "on-primary-container": "#006a70",
+              "surface-container-lowest": "#0a0e16",
+              "on-tertiary": "#283044",
+              "on-background": "#dfe2ee",
+              "outline-variant": "#3a494b",
+              "surface-container": "#1c2028",
+              "on-tertiary-container": "#575f75",
+              "inverse-surface": "#dfe2ee",
+              "on-tertiary-fixed": "#131b2e",
+              "on-error": "#690005",
+              "surface-dim": "#0f131c",
+              "tertiary-fixed": "#dae2fc",
+              "primary-fixed": "#6ff6ff",
+              "on-surface": "#dfe2ee",
+              "surface-container-high": "#262a33",
+              "inverse-primary": "#00696f",
+              "inverse-on-surface": "#2c3039",
+              "on-secondary-container": "#002c4b",
+              "surface-bright": "#353942",
+              "on-error-container": "#ffdad6",
+              "on-tertiary-fixed-variant": "#3f465b",
+              "outline": "#849495",
+              "secondary-fixed": "#d0e4ff",
+              "tertiary": "#f7f6ff",
+              "on-secondary": "#003256",
+              "secondary": "#9bcbff",
+              "tertiary-container": "#d3daf4",
+              "primary-fixed-dim": "#00dce6",
+              "error-container": "#93000a",
+              "surface-container-low": "#181c24",
+              "primary": "#e0fdff",
+              "primary-container": "#00f2fe",
+              "tertiary-fixed-dim": "#bec6e0",
+              "surface-container-highest": "#31353e",
+              "on-secondary-fixed-variant": "#004a7a",
+              "surface-variant": "#31353e",
+              "on-primary": "#00373a",
+              "surface": "#0f131c",
+              "on-secondary-fixed": "#001d34",
+              "surface-tint": "#00dce6",
+              "on-primary-fixed": "#002022",
+              "secondary-container": "#3196e6",
+              "secondary-fixed-dim": "#9bcbff",
+              "on-surface-variant": "#b9cacb",
+              "on-primary-fixed-variant": "#004f53",
+              "background": "#0f131c"
+            },
+            "borderRadius": {
+              "DEFAULT": "0.25rem",
+              "lg": "0.5rem",
+              "xl": "0.75rem",
+              "full": "9999px"
+            },
+            "spacing": {
+              "space-sm": "0.75rem",
+              "space-md": "1rem",
+              "space-lg": "1.5rem",
+              "gutter-base": "1rem",
+              "margin-base": "1.5rem",
+              "space-xs": "0.5rem",
+              "space-2xl": "3rem",
+              "grid-columns": "12",
+              "space-xl": "2rem",
+              "space-2xs": "0.25rem"
+            },
+            "fontFamily": {
+              "headline-sm": ["Space Grotesk"],
+              "display-xl": ["Space Grotesk"],
+              "label-sm": ["JetBrains Mono"],
+              "headline-lg": ["Space Grotesk"],
+              "body-lg": ["Inter"],
+              "headline-md": ["Space Grotesk"],
+              "label-md": ["JetBrains Mono"],
+              "body-sm": ["Inter"],
+              "body-md": ["Inter"],
+              "display-lg": ["Space Grotesk"]
+            }
+          }
+        }
+      }
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet" />
   </head>
-  <body>
+  <body class="bg-surface font-body text-on-surface">
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

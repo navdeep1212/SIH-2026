@@ -15,7 +15,7 @@ def health_check():
     return {"status": "ok"}
 
 @app.post("/process-video")
-async def process_video_endpoint(
+def process_video_endpoint(
     video: UploadFile = File(...),
     camera_id: str = Form("CAM_01")
 ):

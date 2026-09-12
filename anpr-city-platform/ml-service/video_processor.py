@@ -1,6 +1,7 @@
 import os
 import sys
 import csv
+import time
 import cv2
 import numpy as np
 import easyocr
@@ -10,6 +11,8 @@ from plate_validator import normalize_plate
 
 MAX_MISSING_FRAMES = 15  # Grace period: ~0.5 sec at 30fps
 MIN_FRAMES_TRACKED = 5   # Filter out false-positive blips seen < 5 frames
+OCR_INTERVAL = 5         # Run OCR only once every 5 frames per active track
+MAX_INFERENCE_DIM = 1280 # Maximum dimension for input frame downscaling before YOLO/ByteTrack
 
 _MODEL = None
 _READER = None
@@ -142,6 +145,9 @@ def process_video(video_path: str, camera_id: str = "CAM_01", verbose: bool = Tr
     """
     Processes a video file using YOLOv8 detection, ByteTrack tracking, EasyOCR,
     and plate_validator, returning a list of finalized vehicle detection event dicts.
+    Optimized:
+    1. Input frame downscaling (MAX_INFERENCE_DIM = 1280) before YOLO/ByteTrack.
+    2. EasyOCR running on active tracks once every OCR_INTERVAL (5) frames (and immediately on first detection).
     """
     base_dir = r"C:\Users\navde\OneDrive\Desktop\SIH 2026\anpr-city-platform"
     model_path = os.path.join(base_dir, r"runs\detect\runs\detect\plate_detector\weights\best.pt")
@@ -166,9 +172,11 @@ def process_video(video_path: str, camera_id: str = "CAM_01", verbose: bool = Tr
     all_seen_track_ids = set()
     finalized_events = []
     frame_count = 0
+    ocr_calls_made = 0
+    start_time = time.time()
 
     if verbose:
-        print(f"Starting tracking... (FPS: {fps:.2f}, Total Frames: {total_video_frames}, Grace Period: {MAX_MISSING_FRAMES} frames, Min Seen: {MIN_FRAMES_TRACKED} frames)", flush=True)
+        print(f"Starting tracking... (FPS: {fps:.2f}, Total Frames: {total_video_frames}, Max Inference Dim: {MAX_INFERENCE_DIM}px, Grace Period: {MAX_MISSING_FRAMES} frames, Min Seen: {MIN_FRAMES_TRACKED} frames, OCR Interval: {OCR_INTERVAL} frames)", flush=True)
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -177,7 +185,19 @@ def process_video(video_path: str, camera_id: str = "CAM_01", verbose: bool = Tr
 
         frame_count += 1
 
-        results = model.track(source=frame, conf=0.5, iou=0.5, persist=True, tracker="bytetrack.yaml", verbose=False)
+        # Downscale frame for YOLO/ByteTrack inference if max dimension exceeds MAX_INFERENCE_DIM
+        orig_h, orig_w, _ = frame.shape
+        max_dim = max(orig_h, orig_w)
+        if max_dim > MAX_INFERENCE_DIM:
+            scale = MAX_INFERENCE_DIM / float(max_dim)
+            new_w = int(round(orig_w * scale))
+            new_h = int(round(orig_h * scale))
+            resized_frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            scale = 1.0
+            resized_frame = frame
+
+        results = model.track(source=resized_frame, imgsz=640, conf=0.5, iou=0.5, persist=True, tracker="bytetrack.yaml", verbose=False)
         result = results[0]
         boxes = result.boxes
 
@@ -195,17 +215,17 @@ def process_video(video_path: str, camera_id: str = "CAM_01", verbose: bool = Tr
 
                 frame_visible_track_ids.add(track_id)
 
-                coords = box.xyxy[0].cpu().numpy().astype(int)
-                h, w, _ = frame.shape
+                coords = box.xyxy[0].cpu().numpy().astype(float)
                 margin = 5
-                x1, y1 = max(0, coords[0] - margin), max(0, coords[1] - margin)
-                x2, y2 = min(w, coords[2] + margin), min(h, coords[3] + margin)
+                # Map box coordinates from resized_frame back to original high-res frame
+                x1 = max(0, int(round(coords[0] / scale)) - margin)
+                y1 = max(0, int(round(coords[1] / scale)) - margin)
+                x2 = min(orig_w, int(round(coords[2] / scale)) + margin)
+                y2 = min(orig_h, int(round(coords[3] / scale)) + margin)
                 crop = frame[y1:y2, x1:x2]
 
                 if crop.size == 0 or crop.shape[0] < 5 or crop.shape[1] < 5:
                     continue
-
-                variants = get_preprocessing_variants(crop)
 
                 if track_id not in tracks:
                     tracks[track_id] = {
@@ -213,7 +233,8 @@ def process_video(video_path: str, camera_id: str = "CAM_01", verbose: bool = Tr
                         "first_frame_seen": frame_count - 1,
                         "last_frame_seen": frame_count - 1,
                         "frames_seen_count": 1,
-                        "frames_missing": 0
+                        "frames_missing": 0,
+                        "last_ocr_frame": None
                     }
                     all_seen_track_ids.add(track_id)
                 else:
@@ -221,19 +242,31 @@ def process_video(video_path: str, camera_id: str = "CAM_01", verbose: bool = Tr
                     tracks[track_id]["frames_seen_count"] += 1
                     tracks[track_id]["frames_missing"] = 0
 
-                for var_name, var_img in variants.items():
-                    ocr_res = reader.readtext(var_img, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
-                    raw_text, conf = process_ocr_blocks(ocr_res)
-                    if raw_text:
-                        corrected_text, was_corrected, matches_format = normalize_plate(raw_text)
-                        if corrected_text:
-                            tracks[track_id]["readings"].append({
-                                "text": corrected_text,
-                                "confidence": conf,
-                                "matches_format": matches_format,
-                                "frame": frame_count,
-                                "variant": var_name
-                            })
+                # Check if OCR should be executed for this track on this frame:
+                # Always run on 1st valid detection (last_ocr_frame is None)
+                # Or every OCR_INTERVAL (5) frames
+                should_run_ocr = (
+                    tracks[track_id]["last_ocr_frame"] is None or
+                    (frame_count - tracks[track_id]["last_ocr_frame"]) >= OCR_INTERVAL
+                )
+
+                if should_run_ocr:
+                    tracks[track_id]["last_ocr_frame"] = frame_count
+                    variants = get_preprocessing_variants(crop)
+                    for var_name, var_img in variants.items():
+                        ocr_calls_made += 1
+                        ocr_res = reader.readtext(var_img, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+                        raw_text, conf = process_ocr_blocks(ocr_res)
+                        if raw_text:
+                            corrected_text, was_corrected, matches_format = normalize_plate(raw_text)
+                            if corrected_text:
+                                tracks[track_id]["readings"].append({
+                                    "text": corrected_text,
+                                    "confidence": conf,
+                                    "matches_format": matches_format,
+                                    "frame": frame_count,
+                                    "variant": var_name
+                                })
 
         # Process missing counters and finalize tracks exceeding grace period
         active_tids = list(tracks.keys())
@@ -323,13 +356,20 @@ def process_video(video_path: str, camera_id: str = "CAM_01", verbose: bool = Tr
 
     cap.release()
 
+    total_processing_time = time.time() - start_time
+    proc_fps = frame_count / total_processing_time if total_processing_time > 0 else 0.0
+
     if verbose:
         print("\n========================================", flush=True)
         print("VIDEO PROCESSING COMPLETE", flush=True)
         print("========================================", flush=True)
         print(f"Video: {video_path}", flush=True)
         print(f"FPS: {fps:.2f}", flush=True)
-        print(f"Total frames: {frame_count}", flush=True)
+        print(f"Total video frames: {total_video_frames}", flush=True)
+        print(f"Frames processed: {frame_count}", flush=True)
+        print(f"OCR calls made: {ocr_calls_made}", flush=True)
+        print(f"Total processing time: {total_processing_time:.2f}s", flush=True)
+        print(f"Approximate processing FPS: {proc_fps:.2f}", flush=True)
         print(f"Unique track IDs/events: {len(all_seen_track_ids)}", flush=True)
         print(f"Events written: {len(finalized_events)}", flush=True)
         print("========================================\n", flush=True)

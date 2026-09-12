@@ -1,122 +1,85 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import React, { useState, useEffect } from 'react';
+import Sidebar from './components/Sidebar';
+import Header from './components/Header';
+import OverviewView from './components/OverviewView';
+import VideoAnalyzerView from './components/VideoAnalyzerView';
+import TrajectorySearchView from './components/TrajectorySearchView';
+import AlertsWidget from './components/AlertsWidget';
+import { connectAlertsSocket } from './services/api';
+import './App.css';
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [activeTab, setActiveTab] = useState('overview');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [alertsList, setAlertsList] = useState([]);
+
+  // Connect to Socket.io for Phase 4 Real-time Blacklist Alerts
+  useEffect(() => {
+    const socket = connectAlertsSocket((newAlert) => {
+      console.log('[App] New blacklist alert event received via Socket.io:', newAlert);
+      setAlertsList((prev) => [newAlert, ...prev]);
+    });
+
+    return () => {
+      if (socket) socket.disconnect();
+    };
+  }, []);
+
+  const handleDismissAlert = (index) => {
+    setAlertsList((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleSearchSubmit = (query) => {
+    setSearchQuery(query);
+    setActiveTab('search');
+  };
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div className="min-h-screen bg-surface font-body text-on-surface flex">
+      {/* Sidebar Navigation */}
+      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
 
-      <div className="ticks"></div>
+      {/* Main Content Container */}
+      <div className="pl-72 flex-1 flex flex-col min-h-screen">
+        {/* Top Fixed Header */}
+        <Header
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          onSearchSubmit={handleSearchSubmit}
+          alertCount={alertsList.length}
+          isProcessing={isProcessing}
+        />
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+        {/* Dynamic View Rendering */}
+        <main className="relative pt-16 min-h-screen bg-surface">
+          {activeTab === 'overview' && (
+            <OverviewView onOpenAnalyzer={() => setActiveTab('video-analyzer')} />
+          )}
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+          {activeTab === 'video-analyzer' && (
+            <VideoAnalyzerView setIsProcessingParent={setIsProcessing} />
+          )}
+
+          {activeTab === 'search' && (
+            <TrajectorySearchView initialPlateQuery={searchQuery} />
+          )}
+
+          {(activeTab === 'reports' || activeTab === 'settings') && (
+            <div className="p-space-lg font-mono text-outline">
+              <h2 className="text-headline-lg font-bold text-on-surface mb-2">
+                {activeTab === 'reports' ? 'Reports & Analytical Logs' : 'Platform Settings'}
+              </h2>
+              <p>Section ready for Phase 2 configuration.</p>
+            </div>
+          )}
+        </main>
+      </div>
+
+      {/* Socket.io Real-Time Blacklist Alerts Banner (Phase 4) */}
+      <AlertsWidget alerts={alertsList} onDismiss={handleDismissAlert} />
+    </div>
+  );
 }
 
-export default App
+export default App;

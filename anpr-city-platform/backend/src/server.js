@@ -7,6 +7,12 @@ const connectDB = require('./db');
 const PORT = process.env.PORT || 5000;
 
 const server = http.createServer(app);
+
+// Increase server timeouts for long ML video processing tasks
+server.timeout = 600000; // 10 minutes
+server.keepAliveTimeout = 600000;
+server.headersTimeout = 605000;
+
 const io = new Server(server, {
   cors: {
     origin: '*',

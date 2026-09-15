@@ -98,3 +98,49 @@ export function connectAlertsSocket(onAlertCallback) {
 
   return socket;
 }
+
+const ML_BASE_URL = 'http://localhost:8000';
+
+/**
+ * Check real-time health of Backend API server and ML FastAPI service
+ * @returns {Promise<{server: boolean, ml: boolean}>}
+ */
+export async function checkSystemHealth() {
+  let serverOnline = false;
+  let mlOnline = false;
+
+  // 1. Try querying Node.js backend health endpoint
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    const response = await fetch(`${API_BASE_URL}/health`, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (response.ok) {
+      const data = await response.json();
+      serverOnline = true;
+      if (data.ml === 'online') {
+        mlOnline = true;
+      }
+    }
+  } catch (err) {
+    serverOnline = false;
+  }
+
+  // 2. Direct ping fallback to ML service if backend is offline or reported ML offline
+  if (!mlOnline) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      const mlResponse = await fetch(`${ML_BASE_URL}/health`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (mlResponse.ok) {
+        mlOnline = true;
+      }
+    } catch (err) {
+      mlOnline = false;
+    }
+  }
+
+  return { server: serverOnline, ml: mlOnline };
+}
+

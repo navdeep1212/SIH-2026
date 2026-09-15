@@ -52,6 +52,32 @@ function parseTimestampToDate(tsStr) {
   return date;
 }
 
+// Concurrency Lock for Video Processing Pipeline
+let isVideoProcessingBusy = false;
+
+// ==========================================
+// Health Check Endpoint (Backend + ML Engine)
+// ==========================================
+app.get('/api/health', async (req, res) => {
+  const mlServiceUrl = process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000';
+  let mlStatus = 'offline';
+  try {
+    const mlRes = await axios.get(`${mlServiceUrl}/health`, { timeout: 2000 });
+    if (mlRes.data && (mlRes.data.status === 'ok' || mlRes.status === 200)) {
+      mlStatus = 'online';
+    }
+  } catch (err) {
+    mlStatus = 'offline';
+  }
+
+  return res.status(200).json({
+    status: 'ok',
+    server: 'online',
+    ml: mlStatus,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // ==========================================
 // Video Processing Endpoint
 // ==========================================
@@ -60,8 +86,22 @@ app.post('/api/videos/process', upload.single('video'), async (req, res) => {
     return res.status(400).json({ error: 'No video file provided in multipart upload' });
   }
 
+  // Prevent concurrent CPU overload by checking processing lock
+  if (isVideoProcessingBusy) {
+    if (req.file.path && fs.existsSync(req.file.path)) {
+      try { fs.unlinkSync(req.file.path); } catch (e) {}
+    }
+    return res.status(429).json({
+      error: 'Video processing pipeline is currently busy analyzing another video. Please wait a few seconds and retry.'
+    });
+  }
+
+  isVideoProcessingBusy = true;
   const cameraId = req.body.camera_id || 'CAM_01';
-  const mlServiceUrl = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+  const mlServiceUrl = process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000';
+
+  const startTime = Date.now();
+  console.log(`[Backend] Starting video processing for camera: ${cameraId}, file: ${req.file.originalname} (${(req.file.size / 1024 / 1024).toFixed(2)} MB)...`);
 
   try {
     const formData = new FormData();
@@ -80,9 +120,15 @@ app.post('/api/videos/process', upload.single('video'), async (req, res) => {
       timeout: 600000, // 10 minutes timeout for CPU video processing
     });
 
+    const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[Backend] ML processing completed successfully in ${elapsedSeconds}s!`);
+
     const mlData = mlResponse.data;
     const eventsToSave = (mlData.events || []).map((evt) => ({
       plate_number: evt.plate_text,
+      vehicle_type: evt.vehicle_type || 'unknown',
+      vehicle_color: evt.vehicle_color || 'unknown',
+      color_confidence: typeof evt.color_confidence === 'number' ? evt.color_confidence : 0,
       camera_id: evt.camera_id || cameraId,
       timestamp: parseTimestampToDate(evt.first_seen_timestamp),
       confidence: typeof evt.confidence === 'number' ? evt.confidence : parseFloat(evt.confidence),
@@ -157,6 +203,7 @@ app.post('/api/videos/process', upload.single('video'), async (req, res) => {
     return res.status(500).json({ error: 'Failed to process video', details: detailMsg });
 
   } finally {
+    isVideoProcessingBusy = false;
     if (req.file && req.file.path) {
       try {
         fs.unlinkSync(req.file.path);

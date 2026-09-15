@@ -2,26 +2,60 @@ import os
 import sys
 import csv
 import time
+import math
 import cv2
 import numpy as np
+import torch
 import easyocr
 from ultralytics import YOLO
 from pathlib import Path
-from plate_validator import normalize_plate
+from plate_validator import normalize_plate, consensus_plate_readings
+from vehicle_constants import VEHICLE_TYPES, VEHICLE_COLORS
+from type_classifier import classify_vehicle_type
+from color_classifier import classify_vehicle_color
 
-MAX_MISSING_FRAMES = 15  # Grace period: ~0.5 sec at 30fps
-MIN_FRAMES_TRACKED = 5   # Filter out false-positive blips seen < 5 frames
-OCR_INTERVAL = 5         # Run OCR only once every 5 frames per active track
-MAX_INFERENCE_DIM = 1280 # Maximum dimension for input frame downscaling before YOLO/ByteTrack
+# Allocate PyTorch CPU threads for maximum throughput without starving the system
+_NUM_THREADS = min(8, max(1, (os.cpu_count() or 4) - 2))
+torch.set_num_threads(_NUM_THREADS)
 
-_MODEL = None
+# ANPR Pipeline Hyperparameters (Full-Frame Lossless Processing)
+FRAME_STRIDE = 1         # Full temporal resolution: 100% of frames processed
+MAX_MISSING_FRAMES = 12  # Grace period before finalizing track
+MIN_FRAMES_TRACKED = 5   # Minimum frames to establish track
+MAX_INFERENCE_DIM = 1280 # Scale limit for vehicle detection
+VEHICLE_CLASS_IDS = [2, 3, 5, 7]  # Car, Motorcycle, Bus, Truck
+
+IGNORED_WORDS = {
+    'CAMERA', 'CAM', 'TATA', 'ASHOK', 'LEYLAND', 'SERVICE', 'MARUTI',
+    'HONDA', 'TOYOTA', 'HYUNDAI', 'MAHINDRA', 'SUZUKI', 'PASS', 'STOP', 'GOODS'
+}
+
+_VEHICLE_MODEL = None
+_PLATE_MODEL = None
 _READER = None
 
-def get_yolo_model(model_path: str):
-    global _MODEL
-    if _MODEL is None:
-        _MODEL = YOLO(model_path)
-    return _MODEL
+def get_vehicle_model():
+    """Returns the YOLOv8 vehicle detector (COCO classes: car, motorcycle, bus, truck)."""
+    global _VEHICLE_MODEL
+    if _VEHICLE_MODEL is None:
+        model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yolov8n.pt")
+        if not os.path.exists(model_path):
+            model_path = "yolov8n.pt"
+        _VEHICLE_MODEL = YOLO(model_path)
+    return _VEHICLE_MODEL
+
+def get_plate_model():
+    """Returns the specialized YOLOv8 license plate detector."""
+    global _PLATE_MODEL
+    if _PLATE_MODEL is None:
+        candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "plate_detector_best.pt"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "best.pt"),
+            "plate_detector_best.pt"
+        ]
+        chosen = next((p for p in candidates if os.path.exists(p)), "plate_detector_best.pt")
+        _PLATE_MODEL = YOLO(chosen)
+    return _PLATE_MODEL
 
 def get_easyocr_reader():
     global _READER
@@ -29,79 +63,219 @@ def get_easyocr_reader():
         _READER = easyocr.Reader(['en'], gpu=False)
     return _READER
 
-def get_preprocessing_variants(img):
+def compute_sharpness(gray_img: np.ndarray) -> float:
+    """Computes Laplacian variance as a blur / sharpness metric."""
+    if gray_img is None or gray_img.size == 0:
+        return 0.0
+    return float(cv2.Laplacian(gray_img, cv2.CV_64F).var())
+
+def process_multiline_ocr(ocr_res):
     """
-    Generates multiple preprocessing variants for a plate crop.
-    Reused exactly from detect_and_ocr.py / detect_video.py.
-    """
-    variants = {}
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape
-    enlarged = cv2.resize(gray, (w * 3, h * 3), interpolation=cv2.INTER_CUBIC)
-    variants['original'] = enlarged
-
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    clahe_img = clahe.apply(enlarged)
-    variants['clahe'] = clahe_img
-
-    denoised = cv2.fastNlMeansDenoising(clahe_img, None, 10, 7, 21)
-    variants['denoise'] = denoised
-
-    adaptive = cv2.adaptiveThreshold(enlarged, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                     cv2.THRESH_BINARY, 11, 2)
-    variants['adaptive'] = adaptive
-
-    _, otsu = cv2.threshold(enlarged, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    variants['otsu'] = otsu
-
-    return variants
-
-def process_ocr_blocks(ocr_res):
-    """
-    Sorts OCR blocks from left to right and concatenates text.
-    Reused exactly from detect_and_ocr.py / detect_video.py.
+    Groups OCR bounding boxes into vertical lines (top to bottom),
+    and left-to-right within each line. Corrects 2-line Indian plates
+    on buses, trucks, and two-wheelers.
     """
     if not ocr_res:
         return "", 0.0
 
-    sorted_res = sorted(ocr_res, key=lambda x: (x[0][0][0] + x[0][2][0]) / 2)
-    combined_text = " ".join([res[1] for res in sorted_res])
-    combined_conf = float(np.mean([res[2] for res in sorted_res]))
+    items = []
+    for r in ocr_res:
+        pts = np.array(r[0])
+        cy = float(np.mean(pts[:, 1]))
+        cx = float(np.mean(pts[:, 0]))
+        h = float(np.max(pts[:, 1]) - np.min(pts[:, 1]))
+        items.append((cy, cx, h, r[1], float(r[2])))
 
-    return combined_text.strip(), combined_conf
+    avg_h = np.mean([it[2] for it in items]) if items else 20
+    items.sort(key=lambda it: it[0])
 
-def select_best_reading(readings):
-    """
-    Selection logic per track_id using strict priority order:
-    1. Among all readings for this track where matches_format == True, if any exist,
-       pick the one with highest confidence among those.
-    2. Only if NO reading for this track ever matched format, fall back to picking
-       highest raw confidence overall.
-    """
-    if not readings:
-        return {"text": "UNKNOWN", "confidence": 0.0, "matches_format": False}
+    lines = []
+    current_line = []
+    last_y = None
 
-    valid_readings = [r for r in readings if r.get("matches_format", False)]
-    if valid_readings:
-        best = max(valid_readings, key=lambda r: r["confidence"])
-        return {
-            "text": best["text"],
-            "confidence": best["confidence"],
-            "matches_format": True
-        }
-    else:
-        best = max(readings, key=lambda r: r["confidence"])
-        return {
-            "text": best["text"],
-            "confidence": best["confidence"],
-            "matches_format": False
-        }
+    for it in items:
+        if last_y is None or abs(it[0] - last_y) < avg_h * 0.55:
+            current_line.append(it)
+            last_y = it[0] if last_y is None else (last_y + it[0]) / 2.0
+        else:
+            current_line.sort(key=lambda x: x[1])
+            lines.append(current_line)
+            current_line = [it]
+            last_y = it[0]
 
-def format_timestamp(seconds):
+    if current_line:
+        current_line.sort(key=lambda x: x[1])
+        lines.append(current_line)
+
+    flat_texts = []
+    all_confs = []
+    for line in lines:
+        for it in line:
+            flat_texts.append(it[3])
+            all_confs.append(it[4])
+
+    combined_text = " ".join(flat_texts).strip()
+    avg_conf = float(np.mean(all_confs)) if all_confs else 0.0
+    return combined_text, avg_conf
+
+def lossless_decompose_plate(crop: np.ndarray) -> list[tuple[str, np.ndarray]]:
     """
-    Formats seconds float to HH:MM:SS.mmm string.
+    Applies multi-scale lossless image decomposition and super-resolution
+    to license plate crops for optimal OCR character extraction under challenging
+    illumination, specular reflections, and resolution constraints.
     """
+    if crop is None or crop.size == 0:
+        return []
+
+    th, tw = crop.shape[:2]
+    if th < 8 or tw < 16:
+        return []
+
+    # 1. Super-Resolution Upscaling using Lanczos4 sinc reconstruction
+    target_h = max(90, min(140, int(round(th * max(1.5, 90.0 / float(th))))))
+    scale = target_h / float(th)
+    target_w = int(round(tw * scale))
+    hd_bgr = cv2.resize(crop, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+    gray = cv2.cvtColor(hd_bgr, cv2.COLOR_BGR2GRAY)
+
+    variants = []
+
+    # Variant 1: Morphological Illumination Decomposition (Top-Hat & Black-Hat)
+    k_dim = max(5, int(target_h * 0.12)) | 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_dim, k_dim))
+    top_hat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
+    black_hat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+    decomp = cv2.add(gray, top_hat)
+    decomp = cv2.subtract(decomp, black_hat)
+    variants.append(("morph_decomp", decomp))
+
+    # Variant 2: Bilateral Denoised + Unsharp Edge Enhancement with Multi-Scale CLAHE
+    bilateral = cv2.bilateralFilter(decomp, d=5, sigmaColor=35, sigmaSpace=35)
+    blurred = cv2.GaussianBlur(bilateral, (0, 0), sigmaX=1.5)
+    unsharp = cv2.addWeighted(bilateral, 1.5, blurred, -0.5, 0)
+    clahe_unsharp = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(6, 6)).apply(unsharp)
+    variants.append(("clahe_unsharp", clahe_unsharp))
+
+    # Variant 3: Standard Adaptive CLAHE on pristine grayscale
+    clahe_std = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8)).apply(gray)
+    variants.append(("clahe_std", clahe_std))
+
+    # Variant 4: Adaptive Otsu Binarized Decomposition
+    _, otsu = cv2.threshold(bilateral, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    variants.append(("otsu_binary", otsu))
+
+    # Variant 5: Inverted Polarity
+    inverted = cv2.bitwise_not(clahe_unsharp)
+    variants.append(("inverted", inverted))
+
+    return variants
+
+def run_ocr_on_plate_crop(crop: np.ndarray, reader) -> list[tuple[str, float, bool]]:
+    """
+    Evaluates raw lossless plate crop across decomposed image representations.
+    Returns list of candidate readings: [(normalized_text, confidence, matches_format), ...]
+    """
+    variants = lossless_decompose_plate(crop)
+    if not variants:
+        return []
+
+    readings = []
+    for name, img_var in variants:
+        res = reader.readtext(img_var, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789[](){}|-_ ')
+        txt, conf = process_multiline_ocr(res)
+        if not txt:
+            continue
+
+        words = txt.upper().split()
+        if any(w in IGNORED_WORDS for w in words):
+            continue
+
+        norm_txt, was_corr, is_match = normalize_plate(txt)
+        if norm_txt and len(norm_txt) >= 4:
+            readings.append((norm_txt, conf, is_match))
+            # If high-confidence format match is found on this variant, early stop variants for this crop
+            if is_match and conf >= 0.85:
+                break
+
+    return readings
+
+def finalize_track(
+    tid: int,
+    t_info: dict,
+    fps: float,
+    camera_id: str,
+    reader,
+    verbose: bool
+) -> tuple[dict | None, int]:
+    """
+    Evaluates plate crops via lossless decomposition OCR, executes multi-frame consensus,
+    aggregates attribute votes, and produces finalized detection event if valid.
+    """
+    is_active_vehicle = (
+        len(t_info["candidate_crops"]) > 0 or
+        (t_info["frames_seen_count"] >= 8 and t_info["max_w"] >= 200 and t_info["max_h"] >= 160)
+    )
+
+    if not is_active_vehicle:
+        return None, 0
+
+    all_readings = []
+    ocr_calls = 0
+
+    # Evaluate up to 4 top candidate crops across the vehicle's trajectory
+    crops_to_evaluate = t_info["candidate_crops"][:4]
+    for _, crop, frame_idx in crops_to_evaluate:
+        ocr_calls += 1
+        readings = run_ocr_on_plate_crop(crop, reader)
+        all_readings.extend(readings)
+
+        # Early exit if we already have confirmed matches from multiple frames
+        confirmed_matches = [r for r in all_readings if r[2] and r[1] >= 0.80]
+        if len(confirmed_matches) >= 2:
+            break
+
+    # Multi-frame consensus voting
+    best_text, best_conf, best_match = consensus_plate_readings(all_readings)
+
+    # Determine consensus vehicle type
+    final_type = t_info["vehicle_type"]
+    if t_info.get("type_votes"):
+        final_type = max(t_info["type_votes"].items(), key=lambda x: x[1])[0]
+
+    # Determine consensus vehicle color
+    final_color = t_info["vehicle_color"]
+    final_color_conf = t_info["color_confidence"]
+    if t_info.get("color_votes"):
+        best_col, weight = max(t_info["color_votes"].items(), key=lambda x: x[1])
+        if best_col != "unknown":
+            final_color = best_col
+
+    first_secs = t_info["first_raw_frame"] / fps if fps > 0 else 0.0
+    last_secs = t_info["last_raw_frame"] / fps if fps > 0 else 0.0
+
+    event = {
+        "plate_text": best_text,
+        "license_plate": best_text,
+        "plate_number": best_text,
+        "confidence": round(float(best_conf), 4),
+        "vehicle_type": final_type,
+        "vehicle_color": final_color,
+        "color_confidence": round(float(final_color_conf), 2),
+        "camera_id": camera_id,
+        "first_seen_timestamp": format_timestamp(first_secs),
+        "last_seen_timestamp": format_timestamp(last_secs),
+        "matched_format": best_match
+    }
+
+    is_valid_anpr = best_match and best_text != "UNREADABLE" and len(best_text) >= 4
+    if is_valid_anpr:
+        if verbose:
+            print(f"[FINALIZED] Vehicle {tid} | Type: {event['vehicle_type']} | Color: {event['vehicle_color']} ({event['color_confidence']*100:.0f}%) | Plate: {best_text} ({best_conf:.2f}, fmt={best_match})", flush=True)
+        return event, ocr_calls
+
+    return None, ocr_calls
+
+def format_timestamp(seconds: float) -> str:
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
@@ -111,51 +285,17 @@ def format_timestamp(seconds):
         millis = 0
     return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
-def print_candidate_readings(tid, readings, best_reading):
-    """
-    Prints the full list of candidate readings considered for a finalized track.
-    """
-    print(f"  Candidate readings considered for Track {tid} ({len(readings)} total reads):", flush=True)
-    if not readings:
-        print("    (No OCR readings recorded)", flush=True)
-        return
-
-    summary = {}
-    for r in readings:
-        key = (r["text"], r["matches_format"])
-        if key not in summary:
-            summary[key] = {"text": r["text"], "confidence": r["confidence"], "matches_format": r["matches_format"], "count": 1}
-        else:
-            summary[key]["count"] += 1
-            if r["confidence"] > summary[key]["confidence"]:
-                summary[key]["confidence"] = r["confidence"]
-
-    sorted_candidates = sorted(summary.values(), key=lambda x: (not x["matches_format"], -x["confidence"]))
-
-    best_text = best_reading["text"]
-    best_fmt = best_reading["matches_format"]
-    best_conf = best_reading["confidence"]
-
-    for cand in sorted_candidates:
-        is_winner = (cand["text"] == best_text and cand["matches_format"] == best_fmt and abs(cand["confidence"] - best_conf) < 1e-5)
-        winner_mark = " -> WINNER (Selected Best Reading)" if is_winner else ""
-        print(f"    - Text: '{cand['text']}', Conf: {cand['confidence']:.4f}, Matched Format: {cand['matches_format']} (Seen {cand['count']}x){winner_mark}", flush=True)
-
 def process_video(video_path: str, camera_id: str = "CAM_01", verbose: bool = True) -> list[dict]:
     """
-    Processes a video file using YOLOv8 detection, ByteTrack tracking, EasyOCR,
-    and plate_validator, returning a list of finalized vehicle detection event dicts.
-    Optimized:
-    1. Input frame downscaling (MAX_INFERENCE_DIM = 1280) before YOLO/ByteTrack.
-    2. EasyOCR running on active tracks once every OCR_INTERVAL (5) frames (and immediately on first detection).
+    Executes the high-accuracy full-frame ANPR & vehicle attribute recognition pipeline:
+    1. Tracks vehicles with ByteTrack across 100% of video frames.
+    2. Classifies Vehicle Type (Sedan, SUV, Bus, Truck, Motorcycle) and Color via trajectory voting.
+    3. Detects license plates with geometric constraints and CCTV HUD exclusion.
+    4. Evaluates plates through Lanczos super-resolution and morphological lossless decomposition.
+    5. Formats and validates license plates using state-anchored Indian standards and multi-frame consensus.
     """
-    base_dir = r"C:\Users\navde\OneDrive\Desktop\SIH 2026\anpr-city-platform"
-    model_path = os.path.join(base_dir, r"runs\detect\runs\detect\plate_detector\weights\best.pt")
-
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"YOLO model weights not found at '{model_path}'")
-
-    model = get_yolo_model(model_path)
+    vehicle_model = get_vehicle_model()
+    plate_model = get_plate_model()
     reader = get_easyocr_reader()
 
     cap = cv2.VideoCapture(video_path)
@@ -166,27 +306,35 @@ def process_video(video_path: str, camera_id: str = "CAM_01", verbose: bool = Tr
     if fps <= 0:
         fps = 30.0
 
+    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     tracks = {}
     all_seen_track_ids = set()
     finalized_events = []
-    frame_count = 0
     ocr_calls_made = 0
+
+    raw_frame_idx = 0
+    sampled_frame_count = 0
     start_time = time.time()
 
     if verbose:
-        print(f"Starting tracking... (FPS: {fps:.2f}, Total Frames: {total_video_frames}, Max Inference Dim: {MAX_INFERENCE_DIM}px, Grace Period: {MAX_MISSING_FRAMES} frames, Min Seen: {MIN_FRAMES_TRACKED} frames, OCR Interval: {OCR_INTERVAL} frames)", flush=True)
+        print(f"Starting Intelligent ANPR Pipeline... (FPS: {fps:.2f}, Frames: {total_video_frames}, Stride: {FRAME_STRIDE}, Threads: {_NUM_THREADS})", flush=True)
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret or frame is None:
             break
 
-        frame_count += 1
+        raw_frame_idx += 1
 
-        # Downscale frame for YOLO/ByteTrack inference if max dimension exceeds MAX_INFERENCE_DIM
-        orig_h, orig_w, _ = frame.shape
+        # Frame Stride: Process every FRAME_STRIDE-th frame (1 = 100% of frames)
+        if (raw_frame_idx - 1) % FRAME_STRIDE != 0:
+            continue
+
+        sampled_frame_count += 1
+
         max_dim = max(orig_h, orig_w)
         if max_dim > MAX_INFERENCE_DIM:
             scale = MAX_INFERENCE_DIM / float(max_dim)
@@ -197,7 +345,17 @@ def process_video(video_path: str, camera_id: str = "CAM_01", verbose: bool = Tr
             scale = 1.0
             resized_frame = frame
 
-        results = model.track(source=resized_frame, imgsz=640, conf=0.5, iou=0.5, persist=True, tracker="bytetrack.yaml", verbose=False)
+        # Stage 1: Detect and Track Vehicles
+        results = vehicle_model.track(
+            source=resized_frame,
+            classes=VEHICLE_CLASS_IDS,
+            imgsz=640,
+            conf=0.25,
+            iou=0.45,
+            persist=True,
+            tracker="bytetrack.yaml",
+            verbose=False
+        )
         result = results[0]
         boxes = result.boxes
 
@@ -216,162 +374,153 @@ def process_video(video_path: str, camera_id: str = "CAM_01", verbose: bool = Tr
                 frame_visible_track_ids.add(track_id)
 
                 coords = box.xyxy[0].cpu().numpy().astype(float)
-                margin = 5
-                # Map box coordinates from resized_frame back to original high-res frame
+                margin = 4
                 x1 = max(0, int(round(coords[0] / scale)) - margin)
                 y1 = max(0, int(round(coords[1] / scale)) - margin)
                 x2 = min(orig_w, int(round(coords[2] / scale)) + margin)
                 y2 = min(orig_h, int(round(coords[3] / scale)) + margin)
-                crop = frame[y1:y2, x1:x2]
+                vehicle_crop = frame[y1:y2, x1:x2]
 
-                if crop.size == 0 or crop.shape[0] < 5 or crop.shape[1] < 5:
+                if vehicle_crop.size == 0 or vehicle_crop.shape[0] < 10 or vehicle_crop.shape[1] < 10:
                     continue
+
+                bw = x2 - x1
+                bh = y2 - y1
+                cx = (x1 + x2) / 2.0
+                cy = (y1 + y2) / 2.0
+                v_area = bw * bh
+                raw_cls_id = int(box.cls[0].item() if hasattr(box.cls[0], 'item') else box.cls[0])
+
+                # Classify Vehicle Type and Color
+                v_type, _ = classify_vehicle_type(raw_cls_id, bw, bh)
+                v_color, v_color_conf = classify_vehicle_color(vehicle_crop, v_type)
 
                 if track_id not in tracks:
                     tracks[track_id] = {
                         "readings": [],
-                        "first_frame_seen": frame_count - 1,
-                        "last_frame_seen": frame_count - 1,
+                        "first_raw_frame": raw_frame_idx,
+                        "last_raw_frame": raw_frame_idx,
                         "frames_seen_count": 1,
                         "frames_missing": 0,
-                        "last_ocr_frame": None
+                        "vehicle_type": v_type,
+                        "type_votes": {v_type: 1} if v_type != "unknown" else {},
+                        "vehicle_color": v_color,
+                        "color_votes": {v_color: v_color_conf * math.sqrt(v_area)} if v_color != "unknown" else {},
+                        "color_confidence": v_color_conf,
+                        "last_center": (cx, cy),
+                        "max_w": bw,
+                        "max_h": bh,
+                        "last_area": v_area,
+                        "candidate_crops": []
                     }
                     all_seen_track_ids.add(track_id)
                 else:
-                    tracks[track_id]["last_frame_seen"] = frame_count - 1
+                    # ID-Switch Safeguard: Detect abnormal velocity/area jumps
+                    last_cx, last_cy = tracks[track_id]["last_center"]
+                    last_area = tracks[track_id]["last_area"]
+                    dist = math.hypot(cx - last_cx, cy - last_cy)
+                    area_ratio = v_area / float(last_area) if last_area > 0 else 1.0
+
+                    if dist > 200 and (area_ratio > 3.5 or area_ratio < 0.28):
+                        if verbose:
+                            print(f"[ID-SWITCH DETECTED] Track {track_id} jumped {dist:.1f}px (area ratio {area_ratio:.2f}). Resetting buffer.", flush=True)
+                        tracks[track_id]["candidate_crops"] = []
+                        tracks[track_id]["readings"] = []
+
+                    tracks[track_id]["last_raw_frame"] = raw_frame_idx
                     tracks[track_id]["frames_seen_count"] += 1
                     tracks[track_id]["frames_missing"] = 0
+                    tracks[track_id]["last_center"] = (cx, cy)
+                    tracks[track_id]["max_w"] = max(tracks[track_id]["max_w"], bw)
+                    tracks[track_id]["max_h"] = max(tracks[track_id]["max_h"], bh)
+                    tracks[track_id]["last_area"] = v_area
 
-                # Check if OCR should be executed for this track on this frame:
-                # Always run on 1st valid detection (last_ocr_frame is None)
-                # Or every OCR_INTERVAL (5) frames
-                should_run_ocr = (
-                    tracks[track_id]["last_ocr_frame"] is None or
-                    (frame_count - tracks[track_id]["last_ocr_frame"]) >= OCR_INTERVAL
-                )
+                    if v_type != "unknown":
+                        tracks[track_id]["type_votes"][v_type] = tracks[track_id]["type_votes"].get(v_type, 0) + 1
+                    if v_color != "unknown":
+                        tracks[track_id]["color_votes"][v_color] = tracks[track_id]["color_votes"].get(v_color, 0.0) + (v_color_conf * math.sqrt(v_area))
 
-                if should_run_ocr:
-                    tracks[track_id]["last_ocr_frame"] = frame_count
-                    variants = get_preprocessing_variants(crop)
-                    for var_name, var_img in variants.items():
-                        ocr_calls_made += 1
-                        ocr_res = reader.readtext(var_img, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
-                        raw_text, conf = process_ocr_blocks(ocr_res)
-                        if raw_text:
-                            corrected_text, was_corrected, matches_format = normalize_plate(raw_text)
-                            if corrected_text:
-                                tracks[track_id]["readings"].append({
-                                    "text": corrected_text,
-                                    "confidence": conf,
-                                    "matches_format": matches_format,
-                                    "frame": frame_count,
-                                    "variant": var_name
-                                })
+                    if v_color_conf > tracks[track_id]["color_confidence"] and v_color != "unknown":
+                        tracks[track_id]["vehicle_color"] = v_color
+                        tracks[track_id]["color_confidence"] = v_color_conf
+                    if tracks[track_id]["vehicle_type"] == "unknown" and v_type != "unknown":
+                        tracks[track_id]["vehicle_type"] = v_type
 
-        # Process missing counters and finalize tracks exceeding grace period
+                # Plate detection on vehicle crop
+                if bw >= 50 and bh >= 50:
+                    pres = plate_model(vehicle_crop, conf=0.20, verbose=False)
+                    pboxes = pres[0].boxes
+                    if pboxes is not None and len(pboxes) > 0:
+                        for pb in pboxes:
+                            conf_pb = float(pb.conf[0])
+                            px1, py1, px2, py2 = [int(round(v)) for v in pb.xyxy[0].cpu().numpy()]
+                            pw, ph = px2 - px1, py2 - py1
+                            p_area = pw * ph
+
+                            # Geometric filters:
+                            # 1. Aspect ratio
+                            ar = pw / float(ph) if ph > 0 else 0
+                            # 2. Area relative to vehicle
+                            area_ratio = p_area / float(v_area) if v_area > 0 else 1.0
+                            # 3. Exclude top 10% CCTV HUD watermark
+                            global_y = y1 + py1
+                            if global_y < orig_h * 0.10:
+                                continue
+
+                            if 1.1 <= ar <= 5.5 and 0.005 <= area_ratio <= 0.20 and pw >= 25 and ph >= 10:
+                                margin_x = max(6, int(round(pw * 0.10)))
+                                margin_y = max(4, int(round(ph * 0.12)))
+                                mx1 = max(0, px1 - margin_x)
+                                my1 = max(0, py1 - margin_y)
+                                mx2 = min(vehicle_crop.shape[1], px2 + margin_x)
+                                my2 = min(vehicle_crop.shape[0], py2 + margin_y)
+                                pcrop = vehicle_crop[my1:my2, mx1:mx2]
+
+                                gray_p = cv2.cvtColor(pcrop, cv2.COLOR_BGR2GRAY)
+                                lap_var = compute_sharpness(gray_p)
+                                score = p_area * math.sqrt(max(1.0, lap_var)) * conf_pb
+
+                                tracks[track_id]["candidate_crops"].append((score, pcrop, raw_frame_idx))
+                                tracks[track_id]["candidate_crops"].sort(key=lambda c: c[0], reverse=True)
+                                tracks[track_id]["candidate_crops"] = tracks[track_id]["candidate_crops"][:8]
+
+        # Finalize disappeared tracks
         active_tids = list(tracks.keys())
         for tid in active_tids:
             if tid not in frame_visible_track_ids:
                 tracks[tid]["frames_missing"] += 1
 
             if tracks[tid]["frames_missing"] > MAX_MISSING_FRAMES:
-                best_reading = select_best_reading(tracks[tid]["readings"])
-                total_seen = tracks[tid]["frames_seen_count"]
-                plate = best_reading["text"]
-                conf = best_reading["confidence"]
-                matched_fmt = best_reading["matches_format"]
-
-                if total_seen >= MIN_FRAMES_TRACKED:
-                    first_secs = tracks[tid]["first_frame_seen"] / fps if fps > 0 else 0.0
-                    last_secs = tracks[tid]["last_frame_seen"] / fps if fps > 0 else 0.0
-                    first_ts = format_timestamp(first_secs)
-                    last_ts = format_timestamp(last_secs)
-
-                    event = {
-                        "plate_text": plate if plate else "UNKNOWN",
-                        "confidence": round(float(conf), 4),
-                        "camera_id": camera_id,
-                        "first_seen_timestamp": first_ts,
-                        "last_seen_timestamp": last_ts,
-                        "matched_format": matched_fmt
-                    }
+                event, calls = finalize_track(tid, tracks[tid], fps, camera_id, reader, verbose)
+                ocr_calls_made += calls
+                if event is not None:
                     finalized_events.append(event)
-
-                    if verbose:
-                        print(f"[FINALIZED] Track {tid} | Plate: {plate} | Conf: {conf:.4f} | Matched Format: {matched_fmt} | Total frames seen: {total_seen}", flush=True)
-                        print_candidate_readings(tid, tracks[tid]["readings"], best_reading)
-                else:
-                    if verbose:
-                        print(f"[DISCARDED] Track {tid} | Plate: {plate} | Conf: {conf:.4f} | Matched Format: {matched_fmt} | Total frames seen: {total_seen} (< {MIN_FRAMES_TRACKED} frames)", flush=True)
-                        print_candidate_readings(tid, tracks[tid]["readings"], best_reading)
-
                 del tracks[tid]
 
-        if verbose:
-            current_active = sorted(list(tracks.keys()))
-            t_strings = []
-            for tid in current_active:
-                best_reading = select_best_reading(tracks[tid]["readings"])
-                t_text = best_reading["text"]
-                t_conf = best_reading["confidence"]
-                t_fmt = best_reading["matches_format"]
-                t_strings.append(f"T{tid}={t_text}({t_conf:.2f}, fmt={t_fmt})")
-            t_str = " ".join(t_strings)
-            print(f"Frame {frame_count} | Active tracks: {current_active} | {t_str}", flush=True)
-
-    # End of video finalization
-    remaining_tids = sorted(list(tracks.keys()))
-    for tid in remaining_tids:
-        best_reading = select_best_reading(tracks[tid]["readings"])
-        total_seen = tracks[tid]["frames_seen_count"]
-        plate = best_reading["text"]
-        conf = best_reading["confidence"]
-        matched_fmt = best_reading["matches_format"]
-
-        if total_seen >= MIN_FRAMES_TRACKED:
-            first_secs = tracks[tid]["first_frame_seen"] / fps if fps > 0 else 0.0
-            last_secs = tracks[tid]["last_frame_seen"] / fps if fps > 0 else 0.0
-            first_ts = format_timestamp(first_secs)
-            last_ts = format_timestamp(last_secs)
-
-            event = {
-                "plate_text": plate if plate else "UNKNOWN",
-                "confidence": round(float(conf), 4),
-                "camera_id": camera_id,
-                "first_seen_timestamp": first_ts,
-                "last_seen_timestamp": last_ts,
-                "matched_format": matched_fmt
-            }
+    # Finalize remaining tracks at video end
+    for tid in list(tracks.keys()):
+        event, calls = finalize_track(tid, tracks[tid], fps, camera_id, reader, verbose)
+        ocr_calls_made += calls
+        if event is not None:
             finalized_events.append(event)
-
-            if verbose:
-                print(f"[FINALIZED] Track {tid} | Plate: {plate} | Conf: {conf:.4f} | Matched Format: {matched_fmt} | Total frames seen: {total_seen}", flush=True)
-                print_candidate_readings(tid, tracks[tid]["readings"], best_reading)
-        else:
-            if verbose:
-                print(f"[DISCARDED] Track {tid} | Plate: {plate} | Conf: {conf:.4f} | Matched Format: {matched_fmt} | Total frames seen: {total_seen} (< {MIN_FRAMES_TRACKED} frames)", flush=True)
-                print_candidate_readings(tid, tracks[tid]["readings"], best_reading)
-
         del tracks[tid]
 
     cap.release()
 
     total_processing_time = time.time() - start_time
-    proc_fps = frame_count / total_processing_time if total_processing_time > 0 else 0.0
+    proc_fps = raw_frame_idx / total_processing_time if total_processing_time > 0 else 0.0
 
     if verbose:
         print("\n========================================", flush=True)
-        print("VIDEO PROCESSING COMPLETE", flush=True)
+        print("ANPR & ATTRIBUTE EXTRACTION COMPLETE", flush=True)
         print("========================================", flush=True)
         print(f"Video: {video_path}", flush=True)
-        print(f"FPS: {fps:.2f}", flush=True)
-        print(f"Total video frames: {total_video_frames}", flush=True)
-        print(f"Frames processed: {frame_count}", flush=True)
+        print(f"Total video frames: {total_video_frames} (Sampled: {sampled_frame_count})", flush=True)
         print(f"OCR calls made: {ocr_calls_made}", flush=True)
         print(f"Total processing time: {total_processing_time:.2f}s", flush=True)
-        print(f"Approximate processing FPS: {proc_fps:.2f}", flush=True)
-        print(f"Unique track IDs/events: {len(all_seen_track_ids)}", flush=True)
-        print(f"Events written: {len(finalized_events)}", flush=True)
+        print(f"Effective processing speed: {proc_fps:.2f} FPS", flush=True)
+        print(f"Unique vehicles tracked: {len(all_seen_track_ids)}", flush=True)
+        print(f"Finalized events: {len(finalized_events)}", flush=True)
         print("========================================\n", flush=True)
 
     return finalized_events

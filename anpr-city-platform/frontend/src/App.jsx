@@ -4,6 +4,13 @@ import Header from './components/Header';
 import OverviewView from './components/OverviewView';
 import VideoAnalyzerView from './components/VideoAnalyzerView';
 import TrajectorySearchView from './components/TrajectorySearchView';
+import LiveCameras from './components/LiveCameras';
+import VehicleTracking from './components/VehicleTracking';
+import TrafficAnalytics from './components/TrafficAnalytics';
+import AlertsWatchlist from './components/AlertsWatchlist';
+import CameraNetwork from './components/CameraNetwork';
+import ReportsView from './components/ReportsView';
+import SettingsView from './components/SettingsView';
 import AlertsWidget from './components/AlertsWidget';
 import { connectAlertsSocket } from './services/api';
 import './App.css';
@@ -32,7 +39,66 @@ function App() {
 
   const handleSearchSubmit = (query) => {
     setSearchQuery(query);
-    setActiveTab('search');
+    setActiveTab('vehicle-tracking');
+  };
+
+  const renderContent = () => {
+    switch (activeTab) {
+      case 'overview':
+        return (
+          <OverviewView
+            onOpenAnalyzer={() => setActiveTab('video-analyzer')}
+            onNavigate={(tab) => setActiveTab(tab)}
+          />
+        );
+      case 'video-analyzer':
+        return <VideoAnalyzerView setIsProcessingParent={setIsProcessing} />;
+      case 'search':
+        return <TrajectorySearchView initialPlateQuery={searchQuery} />;
+      case 'live-cameras':
+        return (
+          <LiveCameras
+            onInspectVehicle={(plate) => {
+              setSearchQuery(plate);
+              setActiveTab('vehicle-tracking');
+            }}
+          />
+        );
+      case 'vehicle-tracking':
+        return (
+          <VehicleTracking
+            initialPlate={searchQuery || 'DL 01 AB 1234'}
+            onNavigate={(tab, plate) => {
+              if (plate) setSearchQuery(plate);
+              setActiveTab(tab);
+            }}
+          />
+        );
+      case 'traffic-analytics':
+        return <TrafficAnalytics />;
+      case 'alerts-watchlist':
+        return (
+          <AlertsWatchlist
+            onTrackPlate={(plate) => {
+              setSearchQuery(plate);
+              setActiveTab('vehicle-tracking');
+            }}
+          />
+        );
+      case 'camera-network':
+        return <CameraNetwork />;
+      case 'reports':
+        return <ReportsView />;
+      case 'settings':
+        return <SettingsView />;
+      default:
+        return (
+          <OverviewView
+            onOpenAnalyzer={() => setActiveTab('video-analyzer')}
+            onNavigate={(tab) => setActiveTab(tab)}
+          />
+        );
+    }
   };
 
   return (
@@ -52,27 +118,8 @@ function App() {
         />
 
         {/* Dynamic View Rendering */}
-        <main className="relative pt-16 min-h-screen bg-surface">
-          {activeTab === 'overview' && (
-            <OverviewView onOpenAnalyzer={() => setActiveTab('video-analyzer')} />
-          )}
-
-          {activeTab === 'video-analyzer' && (
-            <VideoAnalyzerView setIsProcessingParent={setIsProcessing} />
-          )}
-
-          {activeTab === 'search' && (
-            <TrajectorySearchView initialPlateQuery={searchQuery} />
-          )}
-
-          {(activeTab === 'reports' || activeTab === 'settings') && (
-            <div className="p-space-lg font-mono text-outline">
-              <h2 className="text-headline-lg font-bold text-on-surface mb-2">
-                {activeTab === 'reports' ? 'Reports & Analytical Logs' : 'Platform Settings'}
-              </h2>
-              <p>Section ready for Phase 2 configuration.</p>
-            </div>
-          )}
+        <main className="relative pt-16 min-h-screen bg-surface p-space-lg">
+          {renderContent()}
         </main>
       </div>
 

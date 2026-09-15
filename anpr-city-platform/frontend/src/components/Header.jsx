@@ -1,7 +1,37 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { checkSystemHealth } from '../services/api';
 
 export default function Header({ activeTab, setActiveTab, onSearchSubmit, alertCount, isProcessing }) {
   const [searchInput, setSearchInput] = useState('');
+  const [health, setHealth] = useState({ server: false, ml: false });
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const updateHealth = async () => {
+      try {
+        const res = await checkSystemHealth();
+        if (isMounted) {
+          setHealth(res);
+        }
+      } catch (err) {
+        if (isMounted) {
+          setHealth({ server: false, ml: false });
+        }
+      }
+    };
+
+    // Immediate check on mount
+    updateHealth();
+
+    // Poll status every 4 seconds
+    const intervalId = setInterval(updateHealth, 4000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
+  }, []);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && searchInput.trim()) {
@@ -26,9 +56,55 @@ export default function Header({ activeTab, setActiveTab, onSearchSubmit, alertC
         <span className="text-headline-sm font-headline-sm text-on-surface font-semibold">
           {titleMap[activeTab] || 'Video Analyzer'}
         </span>
-        <span className="px-space-xs py-0.5 rounded bg-surface-container-high text-primary text-label-sm font-label-sm border border-outline-variant/30 font-mono">
-          LOCAL / DEMO
-        </span>
+
+        {/* Live System Status Indicators (Server & ML) */}
+        <div className="flex items-center gap-2">
+          {/* Server Status Indicator */}
+          <div
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-container border border-outline-variant/30 text-[11px] font-mono select-none transition-all duration-300"
+            title={`API Server (Port 5000): ${health.server ? 'Active & Healthy' : 'Offline / Unreachable'}`}
+          >
+            <span className="relative flex h-2.5 w-2.5 items-center justify-center">
+              {health.server && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+              )}
+              <span
+                className={`relative inline-flex rounded-full h-2 w-2 transition-colors duration-300 ${
+                  health.server
+                    ? 'bg-cyan-400 shadow-[0_0_8px_#00f2fe]'
+                    : 'bg-red-500 shadow-[0_0_8px_#ef4444]'
+                }`}
+              ></span>
+            </span>
+            <span className="text-outline">SERVER:</span>
+            <span className={`font-semibold tracking-wider ${health.server ? 'text-cyan-400' : 'text-red-400'}`}>
+              {health.server ? 'ONLINE' : 'OFFLINE'}
+            </span>
+          </div>
+
+          {/* ML Service Status Indicator */}
+          <div
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-surface-container border border-outline-variant/30 text-[11px] font-mono select-none transition-all duration-300"
+            title={`ML Service (Port 8000): ${health.ml ? 'Active & Ready for Inference' : 'Offline / Unreachable'}`}
+          >
+            <span className="relative flex h-2.5 w-2.5 items-center justify-center">
+              {health.ml && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+              )}
+              <span
+                className={`relative inline-flex rounded-full h-2 w-2 transition-colors duration-300 ${
+                  health.ml
+                    ? 'bg-cyan-400 shadow-[0_0_8px_#00f2fe]'
+                    : 'bg-red-500 shadow-[0_0_8px_#ef4444]'
+                }`}
+              ></span>
+            </span>
+            <span className="text-outline">ML:</span>
+            <span className={`font-semibold tracking-wider ${health.ml ? 'text-cyan-400' : 'text-red-400'}`}>
+              {health.ml ? 'ONLINE' : 'OFFLINE'}
+            </span>
+          </div>
+        </div>
       </div>
 
       <div className="flex items-center gap-space-lg">

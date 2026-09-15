@@ -2,17 +2,26 @@ import os
 import shutil
 import tempfile
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from video_processor import process_video
 
 app = FastAPI(title="ANPR Video Processing API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/health")
 def health_check():
     """
     Simple health check endpoint.
     """
-    return {"status": "ok"}
+    return {"status": "ok", "service": "ml"}
 
 @app.post("/process-video")
 def process_video_endpoint(

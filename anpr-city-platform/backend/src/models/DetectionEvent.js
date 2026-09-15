@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { ALLOWED_VEHICLE_TYPES, ALLOWED_VEHICLE_COLORS } = require('../constants');
 
 const detectionEventSchema = new mongoose.Schema(
   {
@@ -7,6 +8,22 @@ const detectionEventSchema = new mongoose.Schema(
       required: true,
       index: true,
       trim: true,
+    },
+    vehicle_type: {
+      type: String,
+      enum: ALLOWED_VEHICLE_TYPES,
+      default: 'unknown',
+      index: true,
+    },
+    vehicle_color: {
+      type: String,
+      enum: ALLOWED_VEHICLE_COLORS,
+      default: 'unknown',
+      index: true,
+    },
+    color_confidence: {
+      type: Number,
+      default: 0.0,
     },
     camera_id: {
       type: String,

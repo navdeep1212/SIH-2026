@@ -5,17 +5,17 @@ export default function Sidebar({ activeTab, setActiveTab }) {
     { id: 'overview', label: 'Overview', icon: 'dashboard', disabled: false },
     { id: 'video-analyzer', label: 'Video Analyzer', icon: 'monitoring', disabled: false },
     { id: 'search', label: 'Plate Search', icon: 'search', disabled: false },
-    { id: 'live-cameras', label: 'Live Cameras', icon: 'videocam', badge: 'SOON', disabled: true },
-    { id: 'vehicle-tracking', label: 'Vehicle Tracking', icon: 'gps_fixed', badge: 'SOON', disabled: true },
-    { id: 'traffic-analytics', label: 'Traffic Analytics', icon: 'bar_chart', badge: 'SOON', disabled: true },
-    { id: 'alerts-watchlist', label: 'Alerts & Watchlist', icon: 'warning', badge: 'SOON', disabled: true },
-    { id: 'camera-network', label: 'Camera Network', icon: 'hub', badge: 'SOON', disabled: true },
+    { id: 'live-cameras', label: 'Live Cameras', icon: 'videocam', disabled: false },
+    { id: 'vehicle-tracking', label: 'Vehicle Tracking', icon: 'gps_fixed', disabled: false },
+    { id: 'traffic-analytics', label: 'Traffic Analytics', icon: 'bar_chart', disabled: false },
+    { id: 'alerts-watchlist', label: 'Alerts & Watchlist', icon: 'warning', disabled: false },
+    { id: 'camera-network', label: 'Camera Network', icon: 'hub', disabled: false },
     { id: 'reports', label: 'Reports', icon: 'description', disabled: false },
     { id: 'settings', label: 'Settings', icon: 'settings', disabled: false },
   ];
 
   return (
-    <aside class="fixed left-0 top-0 h-full w-72 bg-surface-container-low z-50 flex flex-col pt-space-lg pb-space-lg border-r border-outline-variant/10">
+    <aside className="fixed left-0 top-0 h-full w-72 bg-surface-container-low z-50 flex flex-col pt-space-lg pb-space-lg border-r border-outline-variant/10">
       <div className="px-space-lg mb-space-lg">
         <h1 className="text-headline-md font-headline-md text-primary tracking-tight uppercase font-bold">NEXUS VISION</h1>
         <p className="text-label-sm font-label-sm text-outline uppercase tracking-wider mt-1 font-mono">AI Traffic Intelligence</p>

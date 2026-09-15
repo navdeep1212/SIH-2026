@@ -38,3 +38,6 @@ Thumbs.db
 **/ocr_output_v2/
 **/validation_output/
 **/resume_log.txt
+
+#zips
+.zip

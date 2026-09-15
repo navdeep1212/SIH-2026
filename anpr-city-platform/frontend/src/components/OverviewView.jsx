@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { getCameras, createCamera } from '../services/api';
 
-export default function OverviewView({ onOpenAnalyzer }) {
+export default function OverviewView({ onOpenAnalyzer, onNavigate }) {
   const [cameras, setCameras] = useState([]);
   const [loadingCameras, setLoadingCameras] = useState(true);
   const [cameraError, setCameraError] = useState(null);
@@ -65,13 +65,17 @@ export default function OverviewView({ onOpenAnalyzer }) {
       {/* Top KPI Cards Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-space-md">
         {/* KPI 1 */}
-        <div className="bg-surface-container rounded-xl p-space-lg relative overflow-hidden flex flex-col justify-between group hover:bg-surface-container-high transition-all border border-outline-variant/10">
+        <div
+          onClick={onOpenAnalyzer}
+          className="bg-surface-container rounded-xl p-space-lg relative overflow-hidden flex flex-col justify-between group hover:bg-surface-container-high hover:border-primary-container/40 transition-all border border-outline-variant/10 cursor-pointer shadow-lg hover:shadow-primary-container/10"
+          title="Click to Open Video Analyzer"
+        >
           <div className="flex items-center justify-between mb-space-md">
-            <span className="text-label-sm font-label-sm text-outline uppercase tracking-wider font-mono">Videos Analyzed</span>
-            <span className="material-symbols-outlined text-primary-fixed text-[20px]">movie</span>
+            <span className="text-label-sm font-label-sm text-outline uppercase tracking-wider font-mono group-hover:text-primary transition-colors">Videos Analyzed</span>
+            <span className="material-symbols-outlined text-primary-fixed text-[20px] group-hover:scale-110 transition-transform">movie</span>
           </div>
           <div>
-            <div className="text-display-lg font-display-xl text-on-surface font-mono">128</div>
+            <div className="text-display-lg font-display-xl text-on-surface font-mono group-hover:text-primary transition-colors">128</div>
             <div className="text-label-sm font-label-sm text-primary-fixed mt-1 flex items-center font-mono">
               <span className="material-symbols-outlined text-[14px] mr-1">trending_up</span> +12% this week
             </div>
@@ -79,13 +83,17 @@ export default function OverviewView({ onOpenAnalyzer }) {
         </div>
 
         {/* KPI 2 */}
-        <div className="bg-surface-container rounded-xl p-space-lg relative overflow-hidden flex flex-col justify-between group hover:bg-surface-container-high transition-all border border-outline-variant/10">
+        <div
+          onClick={() => onNavigate && onNavigate('vehicle-tracking')}
+          className="bg-surface-container rounded-xl p-space-lg relative overflow-hidden flex flex-col justify-between group hover:bg-surface-container-high hover:border-secondary-container/40 transition-all border border-outline-variant/10 cursor-pointer shadow-lg hover:shadow-secondary-container/10"
+          title="Click to View Vehicle Tracking"
+        >
           <div className="flex items-center justify-between mb-space-md">
-            <span className="text-label-sm font-label-sm text-outline uppercase tracking-wider font-mono">Vehicles Detected</span>
-            <span className="material-symbols-outlined text-secondary text-[20px]">directions_car</span>
+            <span className="text-label-sm font-label-sm text-outline uppercase tracking-wider font-mono group-hover:text-secondary transition-colors">Vehicles Detected</span>
+            <span className="material-symbols-outlined text-secondary text-[20px] group-hover:scale-110 transition-transform">directions_car</span>
           </div>
           <div>
-            <div className="text-display-lg font-display-xl text-on-surface font-mono">4,382</div>
+            <div className="text-display-lg font-display-xl text-on-surface font-mono group-hover:text-secondary transition-colors">4,382</div>
             <div className="text-label-sm font-label-sm text-secondary mt-1 flex items-center font-mono">
               <span className="material-symbols-outlined text-[14px] mr-1">trending_up</span> +340 today
             </div>
@@ -93,13 +101,17 @@ export default function OverviewView({ onOpenAnalyzer }) {
         </div>
 
         {/* KPI 3 */}
-        <div className="bg-surface-container rounded-xl p-space-lg relative overflow-hidden flex flex-col justify-between group hover:bg-surface-container-high transition-all border border-outline-variant/10">
+        <div
+          onClick={() => onNavigate && onNavigate('camera-network')}
+          className="bg-surface-container rounded-xl p-space-lg relative overflow-hidden flex flex-col justify-between group hover:bg-surface-container-high hover:border-primary-container/40 transition-all border border-outline-variant/10 cursor-pointer shadow-lg hover:shadow-primary-container/10"
+          title="Click to Open Camera Network"
+        >
           <div className="flex items-center justify-between mb-space-md">
-            <span className="text-label-sm font-label-sm text-outline uppercase tracking-wider font-mono">Registered Cameras</span>
-            <span className="material-symbols-outlined text-primary-fixed text-[20px]">videocam</span>
+            <span className="text-label-sm font-label-sm text-outline uppercase tracking-wider font-mono group-hover:text-primary transition-colors">Registered Cameras</span>
+            <span className="material-symbols-outlined text-primary-fixed text-[20px] group-hover:scale-110 transition-transform">videocam</span>
           </div>
           <div>
-            <div className="text-display-lg font-display-xl text-on-surface font-mono">
+            <div className="text-display-lg font-display-xl text-on-surface font-mono group-hover:text-primary transition-colors">
               {loadingCameras ? '...' : cameras.length}
             </div>
             <div className="text-label-sm font-label-sm text-primary-fixed mt-1 flex items-center font-mono">
@@ -109,13 +121,17 @@ export default function OverviewView({ onOpenAnalyzer }) {
         </div>
 
         {/* KPI 4 */}
-        <div className="bg-surface-container rounded-xl p-space-lg relative overflow-hidden flex flex-col justify-between group hover:bg-surface-container-high transition-all border border-outline-variant/10">
+        <div
+          onClick={() => onNavigate && onNavigate('reports')}
+          className="bg-surface-container rounded-xl p-space-lg relative overflow-hidden flex flex-col justify-between group hover:bg-surface-container-high hover:border-tertiary-fixed/40 transition-all border border-outline-variant/10 cursor-pointer shadow-lg hover:shadow-tertiary-fixed/10"
+          title="Click to View Accuracy Reports"
+        >
           <div className="flex items-center justify-between mb-space-md">
-            <span className="text-label-sm font-label-sm text-outline uppercase tracking-wider font-mono">Avg OCR Accuracy</span>
-            <span className="material-symbols-outlined text-tertiary-fixed text-[20px]">analytics</span>
+            <span className="text-label-sm font-label-sm text-outline uppercase tracking-wider font-mono group-hover:text-primary transition-colors">Avg OCR Accuracy</span>
+            <span className="material-symbols-outlined text-tertiary-fixed text-[20px] group-hover:scale-110 transition-transform">analytics</span>
           </div>
           <div>
-            <div className="text-display-lg font-display-xl text-on-surface font-mono">94.2%</div>
+            <div className="text-display-lg font-display-xl text-on-surface font-mono group-hover:text-primary transition-colors">94.2%</div>
             <div className="text-label-sm font-label-sm text-tertiary-fixed mt-1 flex items-center font-mono">
               <span className="material-symbols-outlined text-[14px] mr-1">verified</span> Optimal range
             </div>
@@ -123,7 +139,11 @@ export default function OverviewView({ onOpenAnalyzer }) {
         </div>
 
         {/* KPI 5 */}
-        <div className="bg-surface-container rounded-xl p-space-lg relative overflow-hidden flex flex-col justify-between group hover:bg-surface-container-high transition-all border border-outline-variant/10">
+        <div
+          onClick={onOpenAnalyzer}
+          className="bg-surface-container rounded-xl p-space-lg relative overflow-hidden flex flex-col justify-between group hover:bg-surface-container-high hover:border-primary-container/40 transition-all border border-outline-variant/10 cursor-pointer shadow-lg"
+          title="Click to Open Video Analyzer"
+        >
           <div className="flex items-center justify-between mb-space-md">
             <span className="text-label-sm font-label-sm text-outline uppercase tracking-wider font-mono">Processing Queue</span>
             <span className="material-symbols-outlined text-primary-fixed text-[20px]">sync</span>

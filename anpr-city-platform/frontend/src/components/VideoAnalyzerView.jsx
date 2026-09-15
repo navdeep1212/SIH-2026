@@ -1,6 +1,29 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { processVideo, getCameras } from '../services/api';
 
+const VEHICLE_TYPE_ICONS = {
+  sedan: 'directions_car',
+  suv: 'airport_shuttle',
+  bus: 'directions_bus',
+  truck: 'local_shipping',
+  motorcycle: 'two_wheeler',
+  unknown: 'directions_car'
+};
+
+const COLOR_HEX_MAP = {
+  white: '#F8FAFC',
+  black: '#1E293B',
+  silver: '#94A3B8',
+  gray: '#64748B',
+  red: '#EF4444',
+  blue: '#3B82F6',
+  yellow: '#EAB308',
+  green: '#22C55E',
+  orange: '#F97316',
+  brown: '#854D0E',
+  unknown: '#475569'
+};
+
 export default function VideoAnalyzerView({ setIsProcessingParent }) {
   // Processing & API State
   const [selectedFile, setSelectedFile] = useState(null);
@@ -146,6 +169,19 @@ export default function VideoAnalyzerView({ setIsProcessingParent }) {
           </button>
         </div>
       </div>
+
+      {/* Active AI Processing Banner */}
+      {isProcessing && (
+        <div className="p-4 rounded-xl bg-primary-container/10 border border-primary-container/30 text-primary font-mono text-body-sm flex items-center gap-3 shadow-lg shadow-primary-container/5">
+          <span className="material-symbols-outlined text-[24px] animate-spin text-primary-container">sync</span>
+          <div className="flex-1">
+            <span className="font-bold text-on-surface">AI Pipeline In Progress: </span>
+            <span className="text-outline">
+              Analyzing frames, executing YOLOv8 detection & EasyOCR plate recognition. Please wait...
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Processing Error Notice */}
       {processingError && (
@@ -311,6 +347,30 @@ export default function VideoAnalyzerView({ setIsProcessingParent }) {
                 </span>
               </div>
               <div className="flex justify-between py-1.5 border-b border-surface-container-high">
+                <span className="text-outline">VEHICLE TYPE</span>
+                <span className="text-on-surface font-bold capitalize flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[18px] text-primary">
+                    {VEHICLE_TYPE_ICONS[selectedEvent?.vehicle_type || 'sedan'] || 'directions_car'}
+                  </span>
+                  {selectedEvent?.vehicle_type || 'Sedan'}
+                </span>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-surface-container-high">
+                <span className="text-outline">VEHICLE COLOR</span>
+                <span className="text-on-surface font-bold capitalize flex items-center gap-2">
+                  <span
+                    className="w-3 h-3 rounded-full border border-white/20 inline-block shadow-sm"
+                    style={{ backgroundColor: COLOR_HEX_MAP[selectedEvent?.vehicle_color || 'white'] || '#94A3B8' }}
+                  ></span>
+                  {selectedEvent?.vehicle_color || 'White'}
+                  {selectedEvent?.color_confidence ? (
+                    <span className="text-[10px] text-outline font-normal">
+                      ({(selectedEvent.color_confidence * 100).toFixed(0)}%)
+                    </span>
+                  ) : null}
+                </span>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-surface-container-high">
                 <span className="text-outline">CONFIDENCE</span>
                 <span className="text-primary-container font-bold">
                   {selectedEvent
@@ -359,6 +419,8 @@ export default function VideoAnalyzerView({ setIsProcessingParent }) {
             <thead>
               <tr className="border-b border-surface-container-high text-label-sm font-mono text-outline uppercase tracking-wider">
                 <th className="py-3 px-4">Plate Text</th>
+                <th className="py-3 px-4">Type</th>
+                <th className="py-3 px-4">Color</th>
                 <th className="py-3 px-4">Confidence</th>
                 <th className="py-3 px-4">Camera ID</th>
                 <th className="py-3 px-4">First Seen</th>
@@ -384,6 +446,23 @@ export default function VideoAnalyzerView({ setIsProcessingParent }) {
                       }`}
                     >
                       <td className="py-3 px-4 text-primary-fixed font-bold tracking-wider">{evt.plate_number}</td>
+                      <td className="py-3 px-4">
+                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-surface-container-high text-xs font-bold capitalize text-on-surface">
+                          <span className="material-symbols-outlined text-[15px] text-primary">
+                            {VEHICLE_TYPE_ICONS[evt.vehicle_type || 'sedan'] || 'directions_car'}
+                          </span>
+                          {evt.vehicle_type || 'Sedan'}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="inline-flex items-center gap-1.5 text-xs font-mono capitalize text-on-surface">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full border border-white/20 inline-block shadow-sm"
+                            style={{ backgroundColor: COLOR_HEX_MAP[evt.vehicle_color || 'white'] || '#94A3B8' }}
+                          ></span>
+                          {evt.vehicle_color || 'White'}
+                        </span>
+                      </td>
                       <td className="py-3 px-4 font-bold text-primary">{confPct}%</td>
                       <td className="py-3 px-4 text-on-surface">{evt.camera_id || selectedCamId}</td>
                       <td className="py-3 px-4 text-outline">{formatTs(evt.timestamp)}</td>
@@ -416,6 +495,18 @@ export default function VideoAnalyzerView({ setIsProcessingParent }) {
                 <>
                   <tr className="hover:bg-surface-container transition-colors cursor-pointer">
                     <td className="py-3 px-4 text-primary-fixed font-bold tracking-wider">DL 01 AB 1234</td>
+                    <td className="py-3 px-4">
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-surface-container-high text-xs font-bold capitalize text-on-surface">
+                        <span className="material-symbols-outlined text-[15px] text-primary">directions_car</span>
+                        Sedan
+                      </span>
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-mono capitalize text-on-surface">
+                        <span className="w-2.5 h-2.5 rounded-full bg-slate-100 border border-white/20 inline-block"></span>
+                        White
+                      </span>
+                    </td>
                     <td className="py-3 px-4 text-primary font-bold">98.4%</td>
                     <td className="py-3 px-4 text-on-surface">{selectedCamId}</td>
                     <td className="py-3 px-4 text-outline">00:01:12</td>
@@ -430,6 +521,18 @@ export default function VideoAnalyzerView({ setIsProcessingParent }) {
                   </tr>
                   <tr className="hover:bg-surface-container transition-colors cursor-pointer">
                     <td className="py-3 px-4 text-primary-fixed font-bold tracking-wider">MH 12 DE 5678</td>
+                     <td className="py-3 px-4">
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-surface-container-high text-xs font-bold capitalize text-on-surface">
+                        <span className="material-symbols-outlined text-[15px] text-primary">directions_car</span>
+                        Sedan
+                      </span>
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-mono capitalize text-on-surface">
+                        <span className="w-2.5 h-2.5 rounded-full bg-slate-100 border border-white/20 inline-block"></span>
+                        White
+                      </span>
+                    </td>
                     <td className="py-3 px-4 text-primary font-bold">95.1%</td>
                     <td className="py-3 px-4 text-on-surface">{selectedCamId}</td>
                     <td className="py-3 px-4 text-outline">00:01:05</td>

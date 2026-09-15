@@ -62,12 +62,12 @@ export default function Sidebar({ activeTab, setActiveTab }) {
 
       <div className="px-space-lg pt-space-md border-t border-surface-container-high mx-space-md">
         <div className="text-label-sm font-label-sm text-outline-variant space-y-1 font-mono">
-          <div className="flex items-center gap-1.5">
+          {/* <div className="flex items-center gap-1.5">
             <span className="text-primary-fixed">●</span> ML Engine Online (YOLOv8)
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-primary-fixed">●</span> OCR Engine Online (EasyOCR)
-          </div>
+          </div> */}
           <div className="text-outline">Queue: 0 active</div>
         </div>
       </div>
